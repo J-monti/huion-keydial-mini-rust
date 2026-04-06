@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use tokio::process::Command;
 use tokio::sync::watch;
 use zbus::object_server::SignalEmitter;
 use zbus::{interface, Connection};
@@ -33,45 +34,57 @@ impl WindowReceiver {
     }
 }
 
-/// Start the active-window watcher. Returns a receiver with the current WM class.
-///
-/// 1. Registers a DBus service (`org.huion.KeyDialMini`) on the session bus.
-/// 2. Loads a small KWin script that hooks `workspace.windowActivated` and
-///    calls our `SetClass` method whenever focus changes.
+/// Start the active-window watcher. Tries KWin Wayland first, falls back to X11 polling.
 pub async fn start_watcher() -> Result<watch::Receiver<Option<String>>, Box<dyn std::error::Error>> {
+    // Try KWin/Wayland first
+    match start_kwin_watcher().await {
+        Ok(rx) => {
+            println!("Using KWin Wayland window detection");
+            return Ok(rx);
+        }
+        Err(e) => {
+            eprintln!("KWin watcher unavailable ({e}), trying X11 fallback");
+        }
+    }
+
+    // Fall back to X11 polling via xprop
+    match start_x11_watcher().await {
+        Ok(rx) => {
+            println!("Using X11 window detection (xprop)");
+            Ok(rx)
+        }
+        Err(e) => {
+            Err(format!("No window detection available (X11: {e})").into())
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// KWin / Wayland backend
+// ---------------------------------------------------------------------------
+
+async fn start_kwin_watcher() -> Result<watch::Receiver<Option<String>>, Box<dyn std::error::Error>> {
     let (tx, rx) = watch::channel(None);
     let tx = Arc::new(tx);
 
-    // Register our DBus service on the session bus
     let conn = Connection::session().await?;
     conn.object_server().at("/Window", WindowReceiver { tx }).await?;
     conn.request_name("org.huion.KeyDialMini").await?;
 
-    // Spawn task to load the KWin script and keep the session bus connection alive
+    // Try loading the script once to verify KWin is available
+    load_kwin_script(&conn).await.map_err(|e| -> Box<dyn std::error::Error> { e })?;
+    println!("KWin active-window script loaded");
+
+    // Keep the session bus connection alive
     tokio::spawn(async move {
-        loop {
-            let result = load_kwin_script(&conn).await;
-            match result {
-                Ok(()) => {
-                    println!("KWin active-window script loaded");
-                    break;
-                }
-                Err(e) => {
-                    eprintln!("Window watcher: failed to load KWin script: {e}");
-                }
-            }
-            tokio::time::sleep(Duration::from_secs(5)).await;
-        }
-        // Keep connection alive so our DBus object server continues to receive calls
+        let _conn = conn;
         std::future::pending::<()>().await;
     });
 
     Ok(rx)
 }
 
-/// Write the JS to a temp file, load it into KWin via Scripting DBus, and start it.
 async fn load_kwin_script(conn: &Connection) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    // Unload any previous instance
     let _ = conn
         .call_method(
             Some("org.kde.KWin"),
@@ -82,11 +95,9 @@ async fn load_kwin_script(conn: &Connection) -> Result<(), Box<dyn std::error::E
         )
         .await;
 
-    // Write script to temp file
     let script_path = std::env::temp_dir().join("huion-keydial-kwin-active-window.js");
     tokio::fs::write(&script_path, KWIN_SCRIPT).await?;
 
-    // Load the script
     let reply = conn
         .call_method(
             Some("org.kde.KWin"),
@@ -102,7 +113,6 @@ async fn load_kwin_script(conn: &Connection) -> Result<(), Box<dyn std::error::E
         return Err("KWin rejected the script".into());
     }
 
-    // Start all loaded scripts
     conn.call_method(
         Some("org.kde.KWin"),
         "/Scripting",
@@ -113,4 +123,78 @@ async fn load_kwin_script(conn: &Connection) -> Result<(), Box<dyn std::error::E
     .await?;
 
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// X11 backend (xprop polling)
+// ---------------------------------------------------------------------------
+
+async fn start_x11_watcher() -> Result<watch::Receiver<Option<String>>, Box<dyn std::error::Error>> {
+    // Verify xprop is available
+    let check = Command::new("xprop").arg("-root").arg("-len").arg("0").output().await?;
+    if !check.status.success() {
+        return Err("xprop not available or no X display".into());
+    }
+
+    let (tx, rx) = watch::channel(None);
+
+    tokio::spawn(async move {
+        let mut last_class: Option<String> = None;
+        loop {
+            let class = x11_active_window_class().await;
+            if class != last_class {
+                last_class = class.clone();
+                if tx.send(class).is_err() {
+                    return; // receiver dropped
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    });
+
+    Ok(rx)
+}
+
+/// Get the active window's WM_CLASS via xprop.
+///
+/// 1. `xprop -root _NET_ACTIVE_WINDOW` → window id
+/// 2. `xprop -id <id> WM_CLASS` → class name
+async fn x11_active_window_class() -> Option<String> {
+    // Get active window ID
+    let output = Command::new("xprop")
+        .args(["-root", "-notype", "_NET_ACTIVE_WINDOW"])
+        .output()
+        .await
+        .ok()?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Output: "_NET_ACTIVE_WINDOW: window id # 0x4e00004"
+    let window_id = stdout.split("# ").nth(1)?.trim();
+    if window_id == "0x0" || window_id.is_empty() {
+        return None;
+    }
+
+    // Get WM_CLASS for that window
+    let output = Command::new("xprop")
+        .args(["-id", window_id, "-notype", "WM_CLASS"])
+        .output()
+        .await
+        .ok()?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Output: 'WM_CLASS = "instance", "ClassName"'
+    // We want the second value (class name)
+    let class_part = stdout.split('=').nth(1)?;
+    let class = class_part
+        .split(',')
+        .nth(1)?
+        .trim()
+        .trim_matches('"')
+        .trim();
+
+    if class.is_empty() {
+        None
+    } else {
+        Some(class.to_string())
+    }
 }
