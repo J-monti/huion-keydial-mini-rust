@@ -5,11 +5,15 @@ mod uinput;
 mod window;
 
 use std::collections::HashMap;
+use std::path::Path;
+use std::time::Instant;
 
 use clap::Parser;
 use evdev::uinput::VirtualDevice;
 use futures_util::StreamExt;
+use notify::{EventKind, RecursiveMode, Watcher};
 use tokio::signal;
+use tokio::sync::watch;
 use zbus::Connection;
 use zbus::zvariant::OwnedValue;
 
@@ -36,14 +40,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
     let mut cfg = Config::load(cli.config.as_deref());
 
-    if let Some(mac) = &cli.device {
+    // Apply CLI overrides
+    let cli_device = cli.device.clone();
+    let cli_debug = cli.debug;
+    if let Some(mac) = &cli_device {
         cfg.device_address = Some(mac.clone());
     }
-    if cli.debug {
+    if cli_debug {
         cfg.debug_mode = true;
     }
 
     println!("Huion KeyDial Mini driver");
+
+    // Set up config watch channel
+    let (cfg_tx, cfg_rx) = watch::channel(cfg);
+
+    // Determine config file path for watching
+    let config_path = cli.config.as_ref()
+        .map(|p| std::path::PathBuf::from(p))
+        .unwrap_or_else(Config::default_config_path);
+
+    // Spawn config file watcher
+    spawn_config_watcher(config_path, cfg_tx, cli_device, cli_debug);
 
     // Create virtual input device
     let mut vdev = uinput::create_device()?;
@@ -68,7 +86,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Main loop: find device, attach, process events, reconnect on disconnect
     loop {
-        match run_device_session(&conn, &cfg, &mut vdev, window_rx.as_ref()).await {
+        match run_device_session(&conn, &cfg_rx, &mut vdev, window_rx.as_ref()).await {
             Ok(()) => println!("Device disconnected"),
             Err(e) => eprintln!("Session error: {e}"),
         }
@@ -78,13 +96,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Wait for a device to appear, polling every 3 seconds
         // Also listen for Ctrl+C
         loop {
+            let device_address = cfg_rx.borrow().device_address.clone();
             tokio::select! {
                 _ = signal::ctrl_c() => {
                     println!("\nShutting down");
                     return Ok(());
                 }
                 _ = tokio::time::sleep(std::time::Duration::from_secs(3)) => {
-                    if let Ok(Some(_)) = bluetooth::find_device(&conn, cfg.device_address.as_deref()).await {
+                    if let Ok(Some(_)) = bluetooth::find_device(&conn, device_address.as_deref()).await {
                         break;
                     }
                 }
@@ -93,14 +112,109 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 }
 
+fn spawn_config_watcher(
+    config_path: std::path::PathBuf,
+    cfg_tx: watch::Sender<Config>,
+    cli_device: Option<String>,
+    cli_debug: bool,
+) {
+    let config_filename = config_path.file_name()
+        .unwrap_or_default()
+        .to_os_string();
+    let watch_dir = config_path.parent()
+        .unwrap_or_else(|| Path::new("/"))
+        .to_path_buf();
+
+    // notify uses std::sync::mpsc, so we bridge to async via spawn_blocking
+    let (fs_tx, fs_rx) = std::sync::mpsc::channel();
+
+    // Start the filesystem watcher
+    let _watcher = match notify::recommended_watcher(fs_tx) {
+        Ok(mut w) => {
+            if let Err(e) = w.watch(&watch_dir, RecursiveMode::NonRecursive) {
+                eprintln!("Warning: could not watch config directory: {e}");
+                return;
+            }
+            println!("Watching config file: {}", config_path.display());
+            // Move watcher into the async task so it stays alive
+            w
+        }
+        Err(e) => {
+            eprintln!("Warning: could not create config watcher: {e}");
+            return;
+        }
+    };
+
+    tokio::task::spawn_blocking(move || {
+        let _keep_alive = _watcher;
+        let mut last_reload = Instant::now();
+
+        loop {
+            match fs_rx.recv() {
+                Ok(Ok(event)) => {
+                    // Only react to modify events
+                    if !matches!(event.kind, EventKind::Modify(_)) {
+                        continue;
+                    }
+
+                    // Filter for our config filename
+                    let is_config = event.paths.iter().any(|p| {
+                        p.file_name()
+                            .map(|f| f == config_filename)
+                            .unwrap_or(false)
+                    });
+                    if !is_config {
+                        continue;
+                    }
+
+                    // Debounce: skip if < 500ms since last reload
+                    let now = Instant::now();
+                    if now.duration_since(last_reload).as_millis() < 500 {
+                        continue;
+                    }
+                    last_reload = now;
+
+                    // Reload config
+                    let config_path_str = config_path.to_string_lossy().to_string();
+                    let mut new_cfg = Config::load(Some(&config_path_str));
+
+                    // Re-apply CLI overrides
+                    if let Some(ref mac) = cli_device {
+                        new_cfg.device_address = Some(mac.clone());
+                    }
+                    if cli_debug {
+                        new_cfg.debug_mode = true;
+                    }
+
+                    match cfg_tx.send(new_cfg) {
+                        Ok(()) => println!("Config reloaded"),
+                        Err(_) => {
+                            // Receiver dropped, main task is gone
+                            break;
+                        }
+                    }
+                }
+                Ok(Err(e)) => {
+                    eprintln!("Config reload failed: {e}");
+                }
+                Err(_) => {
+                    // Channel closed, watcher dropped
+                    break;
+                }
+            }
+        }
+    });
+}
+
 async fn run_device_session(
     conn: &Connection,
-    cfg: &Config,
+    cfg_rx: &watch::Receiver<Config>,
     vdev: &mut VirtualDevice,
     window_rx: Option<&tokio::sync::watch::Receiver<Option<String>>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Find the device
-    let device = match bluetooth::find_device(conn, cfg.device_address.as_deref()).await? {
+    let device_address = cfg_rx.borrow().device_address.clone();
+    let device = match bluetooth::find_device(conn, device_address.as_deref()).await? {
         Some(d) => d,
         None => {
             println!("No connected Huion device found");
@@ -169,6 +283,9 @@ async fn run_device_session(
                     }
                 }
 
+                // Get current config snapshot
+                let cfg = cfg_rx.borrow().clone();
+
                 // Resolve active profile based on focused window
                 let active_wm_class = window_rx.map(|rx| rx.borrow().clone()).unwrap_or(None);
                 let profile = cfg.resolve_profile(active_wm_class.as_deref());
@@ -180,9 +297,9 @@ async fn run_device_session(
                 }
 
                 match data.len() {
-                    8 => process_hid_report(&data, &mut prev_modifiers, &mut prev_keys, vdev, cfg, &profile)?,
-                    6 => process_dial_report(&data, vdev, cfg, &profile)?,
-                    2 => process_dial_click(&data, vdev, cfg, &profile)?,
+                    8 => process_hid_report(&data, &mut prev_modifiers, &mut prev_keys, vdev, &cfg, &profile)?,
+                    6 => process_dial_report(&data, vdev, &cfg, &profile)?,
+                    2 => process_dial_click(&data, vdev, &cfg, &profile)?,
                     1 => {
                         if cfg.debug_mode { println!("Battery: {}%", data[0]); }
                     }
