@@ -1,5 +1,4 @@
 mod bluetooth;
-mod config;
 mod hid;
 mod uinput;
 mod window;
@@ -17,7 +16,7 @@ use tokio::sync::watch;
 use zbus::Connection;
 use zbus::zvariant::OwnedValue;
 
-use crate::config::{Config, ResolvedProfile};
+use huion_config::{Config, ResolvedProfile};
 
 #[derive(Parser)]
 #[command(name = "huion-keydial-mini", about = "Huion KeyDial Mini driver")]

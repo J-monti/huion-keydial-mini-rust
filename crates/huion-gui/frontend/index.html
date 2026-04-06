@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Huion KeyDial Mini</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div id="app">
+        <!-- Profile bar -->
+        <header id="profile-bar">
+            <div class="profile-controls">
+                <label for="profile-select">Profile:</label>
+                <select id="profile-select"></select>
+                <button id="btn-add-profile" class="btn btn-secondary" title="Add Profile">+ Add Profile</button>
+                <button id="btn-delete-profile" class="btn btn-danger" title="Delete Profile">Delete</button>
+            </div>
+        </header>
+
+        <!-- Add-profile dropdown (hidden by default) -->
+        <div id="app-picker" class="dropdown-panel hidden">
+            <div class="dropdown-header">
+                <input type="text" id="app-search" placeholder="Search applications..." autocomplete="off">
+                <button id="btn-close-app-picker" class="btn-icon" title="Close">&times;</button>
+            </div>
+            <ul id="app-list"></ul>
+        </div>
+
+        <!-- Main content: two columns -->
+        <main id="main-content">
+            <!-- Left column: device image -->
+            <section id="device-panel">
+                <div id="device-container">
+                    <img id="device-image" src="keydial_image.png" alt="Huion KeyDial Mini" draggable="false">
+                    <div id="button-overlays"></div>
+                </div>
+            </section>
+
+            <!-- Right column: config panel -->
+            <section id="config-panel">
+                <h2 id="config-title">Button Assignments</h2>
+
+                <div id="button-list"></div>
+
+                <h2 class="section-heading">Dial Settings</h2>
+                <div id="dial-settings">
+                    <div class="dial-row" data-dial="cw">
+                        <span class="dial-label">&#x21BB; Clockwise</span>
+                        <div class="dial-value"></div>
+                    </div>
+                    <div class="dial-row" data-dial="ccw">
+                        <span class="dial-label">&#x21BA; Counter-CW</span>
+                        <div class="dial-value"></div>
+                    </div>
+                    <div class="dial-row" data-dial="click">
+                        <span class="dial-label">&#x25CE; Click</span>
+                        <div class="dial-value"></div>
+                    </div>
+                </div>
+
+                <!-- WM Class editor (app profiles only) -->
+                <div id="wm-class-section" class="hidden">
+                    <h2 class="section-heading">Window Classes</h2>
+                    <div id="wm-class-editor">
+                        <div id="wm-class-tags"></div>
+                        <input type="text" id="wm-class-input" placeholder="Add wm_class..." autocomplete="off">
+                    </div>
+                </div>
+            </section>
+        </main>
+
+        <!-- Save bar -->
+        <footer id="save-bar">
+            <div class="save-controls">
+                <span id="change-indicator" class="hidden">Unsaved changes</span>
+                <button id="btn-discard" class="btn btn-secondary">Discard Changes</button>
+                <button id="btn-save" class="btn btn-primary">Save</button>
+            </div>
+        </footer>
+
+        <!-- Toast notification -->
+        <div id="toast" class="hidden"></div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>

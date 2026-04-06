@@ -1,8 +1,8 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(default)]
 pub struct Config {
     pub device_address: Option<String>,
@@ -11,14 +11,14 @@ pub struct Config {
     pub profiles: HashMap<String, AppProfile>,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(default)]
 pub struct Profile {
     pub button_mappings: HashMap<String, Vec<String>>,
     pub dial: DialSettings,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(default)]
 pub struct AppProfile {
     pub wm_class: Vec<String>,
@@ -26,7 +26,7 @@ pub struct AppProfile {
     pub dial: DialSettings,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(default)]
 pub struct DialSettings {
     pub cw: Option<String>,
@@ -34,11 +34,45 @@ pub struct DialSettings {
     pub click: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct ResolvedProfile {
     pub button_mappings: HashMap<String, Vec<String>>,
     pub dial: DialSettings,
 }
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ButtonInfo {
+    pub hid_code: &'static str,
+    pub label: &'static str,
+    pub row: u8,
+    pub col: u8,
+    pub row_span: u8,
+    pub col_span: u8,
+    pub remappable: bool,
+}
+
+pub const BUTTONS: &[ButtonInfo] = &[
+    ButtonInfo { hid_code: "14", label: "1",  row: 0, col: 0, row_span: 1, col_span: 1, remappable: true },
+    ButtonInfo { hid_code: "10", label: "2",  row: 0, col: 1, row_span: 1, col_span: 1, remappable: true },
+    ButtonInfo { hid_code: "15", label: "3",  row: 0, col: 2, row_span: 1, col_span: 1, remappable: true },
+    ButtonInfo { hid_code: "76", label: "4",  row: 0, col: 3, row_span: 1, col_span: 1, remappable: true },
+    ButtonInfo { hid_code: "12", label: "5",  row: 1, col: 0, row_span: 1, col_span: 1, remappable: true },
+    ButtonInfo { hid_code: "7",  label: "6",  row: 1, col: 1, row_span: 1, col_span: 1, remappable: true },
+    ButtonInfo { hid_code: "5",  label: "7",  row: 1, col: 2, row_span: 1, col_span: 1, remappable: true },
+    ButtonInfo { hid_code: "8",  label: "8",  row: 1, col: 3, row_span: 1, col_span: 1, remappable: true },
+    ButtonInfo { hid_code: "22", label: "9",  row: 2, col: 0, row_span: 1, col_span: 1, remappable: true },
+    ButtonInfo { hid_code: "29", label: "10", row: 2, col: 1, row_span: 1, col_span: 1, remappable: true },
+    ButtonInfo { hid_code: "6",  label: "11", row: 2, col: 2, row_span: 1, col_span: 1, remappable: true },
+    ButtonInfo { hid_code: "25", label: "12", row: 2, col: 3, row_span: 1, col_span: 1, remappable: true },
+    // Row 4: native modifier buttons (not remappable)
+    ButtonInfo { hid_code: "m1", label: "Ctrl",  row: 3, col: 0, row_span: 1, col_span: 1, remappable: false },
+    ButtonInfo { hid_code: "m4", label: "Alt",   row: 3, col: 1, row_span: 1, col_span: 1, remappable: false },
+    ButtonInfo { hid_code: "m2", label: "Shift", row: 3, col: 2, row_span: 1, col_span: 1, remappable: false },
+    // Spanning buttons
+    ButtonInfo { hid_code: "40", label: "13", row: 3, col: 3, row_span: 2, col_span: 1, remappable: true },
+    ButtonInfo { hid_code: "44", label: "14", row: 4, col: 0, row_span: 1, col_span: 2, remappable: true },
+    ButtonInfo { hid_code: "17", label: "15", row: 4, col: 2, row_span: 1, col_span: 1, remappable: true },
+];
 
 impl Default for Config {
     fn default() -> Self {
@@ -119,6 +153,24 @@ impl Config {
         Self::default()
     }
 
+    pub fn save(&self, path: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
+        let config_path = if let Some(p) = path {
+            PathBuf::from(p)
+        } else {
+            Self::default_config_path()
+        };
+
+        if let Some(parent) = config_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+
+        let yaml = serde_yaml::to_string(self)?;
+        let tmp_path = config_path.with_extension("yaml.tmp");
+        std::fs::write(&tmp_path, yaml)?;
+        std::fs::rename(&tmp_path, &config_path)?;
+        Ok(())
+    }
+
     pub fn resolve_profile(&self, wm_class: Option<&str>) -> ResolvedProfile {
         let wm_class = match wm_class {
             Some(c) => c,
@@ -168,4 +220,33 @@ impl Config {
             .join("huion-keydial-mini")
             .join("config.yaml")
     }
+}
+
+pub fn all_key_names() -> Vec<&'static str> {
+    vec![
+        "KEY_A", "KEY_B", "KEY_C", "KEY_D", "KEY_E", "KEY_F",
+        "KEY_G", "KEY_H", "KEY_I", "KEY_J", "KEY_K", "KEY_L",
+        "KEY_M", "KEY_N", "KEY_O", "KEY_P", "KEY_Q", "KEY_R",
+        "KEY_S", "KEY_T", "KEY_U", "KEY_V", "KEY_W", "KEY_X",
+        "KEY_Y", "KEY_Z",
+        "KEY_1", "KEY_2", "KEY_3", "KEY_4", "KEY_5", "KEY_6",
+        "KEY_7", "KEY_8", "KEY_9", "KEY_0",
+        "KEY_F1", "KEY_F2", "KEY_F3", "KEY_F4", "KEY_F5", "KEY_F6",
+        "KEY_F7", "KEY_F8", "KEY_F9", "KEY_F10", "KEY_F11", "KEY_F12",
+        "KEY_ENTER", "KEY_ESC", "KEY_BACKSPACE", "KEY_TAB", "KEY_SPACE",
+        "KEY_MINUS", "KEY_EQUAL",
+        "KEY_LEFTBRACE", "KEY_RIGHTBRACE", "KEY_BACKSLASH",
+        "KEY_SEMICOLON", "KEY_APOSTROPHE", "KEY_GRAVE",
+        "KEY_COMMA", "KEY_DOT", "KEY_SLASH", "KEY_CAPSLOCK",
+        "KEY_SYSRQ", "KEY_PRINTSCREEN", "KEY_SCROLLLOCK", "KEY_PAUSE",
+        "KEY_INSERT", "KEY_HOME", "KEY_PAGEUP",
+        "KEY_DELETE", "KEY_END", "KEY_PAGEDOWN",
+        "KEY_RIGHT", "KEY_LEFT", "KEY_DOWN", "KEY_UP",
+        "KEY_NUMLOCK",
+        "KEY_LEFTCTRL", "KEY_LEFTSHIFT", "KEY_LEFTALT", "KEY_LEFTMETA",
+        "KEY_RIGHTCTRL", "KEY_RIGHTSHIFT", "KEY_RIGHTALT", "KEY_RIGHTMETA",
+        "KEY_VOLUMEUP", "KEY_VOLUMEDOWN", "KEY_MUTE",
+        "KEY_PLAYPAUSE", "KEY_NEXTSONG", "KEY_PREVIOUSSONG", "KEY_STOPCD",
+        "KEY_MENU",
+    ]
 }
