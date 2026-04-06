@@ -17,6 +17,7 @@ use zbus::Connection;
 use zbus::zvariant::OwnedValue;
 
 use huion_config::{Config, ResolvedProfile};
+use notify_rust::Notification;
 
 #[derive(Parser)]
 #[command(name = "huion-keydial-mini", about = "Huion KeyDial Mini driver")]
@@ -241,6 +242,7 @@ async fn run_device_session(
     // Process events
     let mut prev_modifiers: u8 = 0;
     let mut prev_keys: Vec<u8> = Vec::new();
+    let mut active_profile_name = String::from("default");
     let mut stream = zbus::MessageStream::from(conn);
 
     loop {
@@ -288,6 +290,16 @@ async fn run_device_session(
                 // Resolve active profile based on focused window
                 let active_wm_class = window_rx.map(|rx| rx.borrow().clone()).unwrap_or(None);
                 let profile = cfg.resolve_profile(active_wm_class.as_deref());
+
+                if profile.name != active_profile_name {
+                    println!("Profile switched: {} -> {}", active_profile_name, profile.name);
+                    let _ = Notification::new()
+                        .summary("Huion KeyDial Mini")
+                        .body(&format!("Profile: {}", profile.name))
+                        .timeout(2000)
+                        .show();
+                    active_profile_name = profile.name.clone();
+                }
 
                 if cfg.debug_mode {
                     if let Some(ref class) = active_wm_class {
@@ -391,6 +403,28 @@ fn process_hid_report(
     Ok(())
 }
 
+fn dial_default(keys: &Option<Vec<String>>, fallback: &str) -> Vec<String> {
+    match keys {
+        Some(k) if !k.is_empty() => k.clone(),
+        _ => vec![fallback.to_string()],
+    }
+}
+
+fn emit_chord_tap(
+    chord_names: &[String],
+    vdev: &mut VirtualDevice,
+) -> Result<Vec<evdev::Key>, Box<dyn std::error::Error>> {
+    let keys: Vec<_> = chord_names.iter().filter_map(|n| hid::key_name_to_evdev(n)).collect();
+    if keys.is_empty() {
+        return Ok(keys);
+    }
+    let presses: Vec<_> = keys.iter().map(|k| evdev::InputEvent::new(evdev::EventType::KEY, k.code(), 1)).collect();
+    let releases: Vec<_> = keys.iter().rev().map(|k| evdev::InputEvent::new(evdev::EventType::KEY, k.code(), 0)).collect();
+    vdev.emit(&presses)?;
+    vdev.emit(&releases)?;
+    Ok(keys)
+}
+
 fn process_dial_report(
     data: &[u8],
     vdev: &mut VirtualDevice,
@@ -400,23 +434,15 @@ fn process_dial_report(
     let dial_val = data[5] as i8;
     if dial_val == 0 { return Ok(()); }
 
-    let (key, direction) = if dial_val < 0 {
-        // 0xff (-1) = clockwise
-        let key_name = profile.dial.cw.as_deref().unwrap_or("KEY_VOLUMEUP");
-        (hid::key_name_to_evdev(key_name), "CW")
+    let (chord_names, direction) = if dial_val < 0 {
+        (dial_default(&profile.dial.cw, "KEY_VOLUMEUP"), "CW")
     } else {
-        // 0x01 (+1) = counterclockwise
-        let key_name = profile.dial.ccw.as_deref().unwrap_or("KEY_VOLUMEDOWN");
-        (hid::key_name_to_evdev(key_name), "CCW")
+        (dial_default(&profile.dial.ccw, "KEY_VOLUMEDOWN"), "CCW")
     };
 
-    if let Some(key) = key {
-        // Tap: press then release
-        vdev.emit(&[evdev::InputEvent::new(evdev::EventType::KEY, key.code(), 1)])?;
-        vdev.emit(&[evdev::InputEvent::new(evdev::EventType::KEY, key.code(), 0)])?;
-        if cfg.debug_mode {
-            println!("  DIAL {direction}: {key:?}");
-        }
+    let keys = emit_chord_tap(&chord_names, vdev)?;
+    if cfg.debug_mode && !keys.is_empty() {
+        println!("  DIAL {direction}: {chord_names:?}");
     }
 
     Ok(())
@@ -429,15 +455,21 @@ fn process_dial_click(
     profile: &ResolvedProfile,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let pressed = data[0] != 0;
-    let key_name = profile.dial.click.as_deref().unwrap_or("KEY_MUTE");
+    let chord_names = dial_default(&profile.dial.click, "KEY_MUTE");
+    let keys: Vec<_> = chord_names.iter().filter_map(|n| hid::key_name_to_evdev(n)).collect();
 
-    if let Some(key) = hid::key_name_to_evdev(key_name) {
-        vdev.emit(&[evdev::InputEvent::new(
-            evdev::EventType::KEY, key.code(), i32::from(pressed),
-        )])?;
-        if cfg.debug_mode {
-            println!("  DIAL CLICK {}: {key:?}", if pressed { "PRESS" } else { "RELEASE" });
-        }
+    let state = i32::from(pressed);
+    let events: Vec<_> = if pressed {
+        keys.iter().map(|k| evdev::InputEvent::new(evdev::EventType::KEY, k.code(), state)).collect()
+    } else {
+        keys.iter().rev().map(|k| evdev::InputEvent::new(evdev::EventType::KEY, k.code(), state)).collect()
+    };
+    if !events.is_empty() {
+        vdev.emit(&events)?;
+    }
+
+    if cfg.debug_mode && !keys.is_empty() {
+        println!("  DIAL CLICK {}: {chord_names:?}", if pressed { "PRESS" } else { "RELEASE" });
     }
 
     Ok(())

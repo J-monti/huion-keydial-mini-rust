@@ -1,0 +1,8 @@
+[Desktop Entry]
+Name=Huion KeyDial Mini
+Comment=Start Huion KeyDial Mini configuration tool in the background
+Exec=env WEBKIT_DISABLE_DMABUF_RENDERER=1 huion-keydial-mini-gui
+Icon=huion-keydial-mini
+Type=Application
+Terminal=false
+X-GNOME-Autostart-enabled=true

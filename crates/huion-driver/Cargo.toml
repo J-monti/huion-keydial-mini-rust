@@ -14,3 +14,4 @@ serde_yaml = "0.9"
 clap = { version = "4", features = ["derive"] }
 dirs = "6"
 notify = "7"
+notify-rust = "4"

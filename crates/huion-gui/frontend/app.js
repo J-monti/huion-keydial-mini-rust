@@ -577,18 +577,29 @@ function closeAllEditors() {
 }
 
 // ── Dial Settings ────────────────────────────────────
+
+// Normalize dial value: always return an array or null.
+// Handles legacy single-string format and new array format.
+function normalizeDialValue(raw) {
+    if (raw === null || raw === undefined) return null;
+    if (typeof raw === 'string') return [raw];
+    if (Array.isArray(raw) && raw.length > 0) return raw;
+    return null;
+}
+
 function getCurrentDialValue(direction) {
     if (currentProfile === 'default') {
-        return { value: config.default.dial[direction] || null, inherited: false };
+        return { value: normalizeDialValue(config.default.dial[direction]), inherited: false };
     }
     const profile = config.profiles[currentProfile];
     if (profile && profile.dial && profile.dial[direction] !== null && profile.dial[direction] !== undefined) {
-        return { value: profile.dial[direction], inherited: false };
+        return { value: normalizeDialValue(profile.dial[direction]), inherited: false };
     }
-    return { value: config.default.dial[direction] || null, inherited: true };
+    return { value: normalizeDialValue(config.default.dial[direction]), inherited: true };
 }
 
 function setCurrentDialValue(direction, value) {
+    // value is an array of key names or null
     if (currentProfile === 'default') {
         config.default.dial[direction] = value;
     } else {
@@ -609,12 +620,14 @@ function renderDialSettings() {
         row.classList.remove('editing');
         valueEl.innerHTML = '';
 
-        if (value) {
-            const tag = document.createElement('span');
-            tag.className = 'key-tag';
-            if (inherited) tag.classList.add('inherited');
-            tag.textContent = formatKeyName(value);
-            valueEl.appendChild(tag);
+        if (value && value.length > 0) {
+            for (const k of value) {
+                const tag = document.createElement('span');
+                tag.className = 'key-tag';
+                if (inherited) tag.classList.add('inherited');
+                tag.textContent = formatKeyName(k);
+                valueEl.appendChild(tag);
+            }
             if (inherited) {
                 const defLabel = document.createElement('span');
                 defLabel.className = 'default-label';
@@ -639,19 +652,29 @@ function renderDialSettings() {
 
 function enterDialEditMode(row, direction) {
     const { value } = getCurrentDialValue(direction);
+    const editKeys = value ? [...value] : [];
+
     row.classList.add('editing');
 
     const label = row.querySelector('.dial-label').cloneNode(true);
     const valueEl = row.querySelector('.dial-value');
     valueEl.innerHTML = '';
 
+    const editor = document.createElement('div');
+    editor.className = 'key-editor';
+
+    const topRow = document.createElement('div');
+    topRow.className = 'key-editor-top';
+    topRow.appendChild(label);
+
+    const tagsContainer = document.createElement('div');
+    tagsContainer.className = 'key-editor-tags';
+
     const inputWrap = document.createElement('div');
     inputWrap.className = 'key-editor-input-wrap';
-    inputWrap.style.width = '100%';
 
     const input = document.createElement('input');
     input.type = 'text';
-    input.value = value ? formatKeyName(value) : '';
     input.placeholder = 'Type to search keys...';
     input.autocomplete = 'off';
 
@@ -660,9 +683,10 @@ function enterDialEditMode(row, direction) {
 
     inputWrap.appendChild(input);
     inputWrap.appendChild(suggestions);
-    valueEl.appendChild(inputWrap);
 
-    // Actions
+    topRow.appendChild(tagsContainer);
+    topRow.appendChild(inputWrap);
+
     const actions = document.createElement('div');
     actions.className = 'key-editor-actions';
 
@@ -682,16 +706,45 @@ function enterDialEditMode(row, direction) {
         renderDialSettings();
     };
 
+    const doneBtn = document.createElement('button');
+    doneBtn.className = 'btn btn-primary';
+    doneBtn.textContent = 'Done';
+    doneBtn.onclick = (e) => {
+        e.stopPropagation();
+        setCurrentDialValue(direction, editKeys.length > 0 ? editKeys : null);
+        closeAllEditors();
+        renderDialSettings();
+    };
+
     actions.appendChild(clearBtn);
-    row.appendChild(actions);
+    actions.appendChild(doneBtn);
+
+    editor.appendChild(topRow);
+    editor.appendChild(actions);
+    valueEl.appendChild(editor);
 
     let highlightedIdx = -1;
-    let selectedRaw = value || null;
+
+    function renderTags() {
+        tagsContainer.innerHTML = '';
+        for (let i = 0; i < editKeys.length; i++) {
+            const tag = document.createElement('span');
+            tag.className = 'key-tag';
+            tag.innerHTML = `${escapeHtml(formatKeyName(editKeys[i]))}<span class="remove-key" data-idx="${i}">&times;</span>`;
+            tag.querySelector('.remove-key').onclick = (e) => {
+                e.stopPropagation();
+                editKeys.splice(i, 1);
+                renderTags();
+            };
+            tagsContainer.appendChild(tag);
+        }
+    }
 
     function filterKeys(query) {
         const lower = query.toLowerCase();
-        if (!lower) return availableKeys.slice(0, 20);
+        if (!lower) return [];
         return availableKeys.filter(k => {
+            if (editKeys.includes(k)) return false;
             const display = formatKeyName(k).toLowerCase();
             const raw = k.toLowerCase();
             return display.includes(lower) || raw.includes(lower);
@@ -713,22 +766,17 @@ function enterDialEditMode(row, direction) {
             div.onmousedown = (e) => {
                 e.preventDefault();
                 e.stopPropagation();
-                selectedRaw = matches[i];
-                setCurrentDialValue(direction, selectedRaw);
-                closeAllEditors();
-                renderDialSettings();
+                editKeys.push(matches[i]);
+                input.value = '';
+                renderTags();
+                renderSuggestions([]);
+                input.focus();
             };
             suggestions.appendChild(div);
         }
     }
 
     input.oninput = () => {
-        selectedRaw = null;
-        renderSuggestions(filterKeys(input.value));
-    };
-
-    input.onfocus = () => {
-        input.select();
         renderSuggestions(filterKeys(input.value));
     };
 
@@ -746,15 +794,8 @@ function enterDialEditMode(row, direction) {
             e.preventDefault();
             if (highlightedIdx >= 0 && items[highlightedIdx]) {
                 items[highlightedIdx].onmousedown(e);
-            } else {
-                // Try exact match
-                const exact = availableKeys.find(k =>
-                    formatKeyName(k).toLowerCase() === input.value.toLowerCase() ||
-                    k.toLowerCase() === input.value.toLowerCase()
-                );
-                if (exact) {
-                    setCurrentDialValue(direction, exact);
-                }
+            } else if (input.value === '') {
+                setCurrentDialValue(direction, editKeys.length > 0 ? editKeys : null);
                 closeAllEditors();
                 renderDialSettings();
             }
@@ -762,6 +803,9 @@ function enterDialEditMode(row, direction) {
             e.preventDefault();
             closeAllEditors();
             renderDialSettings();
+        } else if (e.key === 'Backspace' && input.value === '' && editKeys.length > 0) {
+            editKeys.pop();
+            renderTags();
         }
     };
 
@@ -772,11 +816,25 @@ function enterDialEditMode(row, direction) {
         }
     }
 
+    renderTags();
+    setTimeout(() => input.focus(), 0);
+
     setTimeout(() => input.focus(), 0);
 }
 
 function commitDialEdit() {
     if (editingDial === null) return;
+    const row = document.querySelector('.dial-row.editing');
+    if (row) {
+        const tags = row.querySelectorAll('.key-editor-tags .key-tag');
+        const keys = [];
+        tags.forEach(tag => {
+            const display = tag.childNodes[0].textContent.trim();
+            const raw = availableKeys.find(k => formatKeyName(k) === display);
+            if (raw) keys.push(raw);
+        });
+        setCurrentDialValue(editingDial, keys.length > 0 ? keys : null);
+    }
     closeAllEditors();
     renderDialSettings();
 }
