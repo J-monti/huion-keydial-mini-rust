@@ -2,6 +2,7 @@ mod bluetooth;
 mod config;
 mod hid;
 mod uinput;
+mod window;
 
 use std::collections::HashMap;
 
@@ -12,7 +13,7 @@ use tokio::signal;
 use zbus::Connection;
 use zbus::zvariant::OwnedValue;
 
-use crate::config::Config;
+use crate::config::{Config, ResolvedProfile};
 
 #[derive(Parser)]
 #[command(name = "huion-keydial-mini", about = "Huion KeyDial Mini driver")]
@@ -52,9 +53,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let conn = Connection::system().await?;
     println!("Connected to system DBus");
 
+    // Start active window watcher (KWin script via session DBus)
+    let window_rx = match window::start_watcher().await {
+        Ok(rx) => {
+            println!("Started active window watcher");
+            Some(rx)
+        }
+        Err(e) => {
+            eprintln!("Warning: window watcher unavailable: {e}");
+            eprintln!("Per-app profiles will not auto-switch; using default profile");
+            None
+        }
+    };
+
     // Main loop: find device, attach, process events, reconnect on disconnect
     loop {
-        match run_device_session(&conn, &cfg, &mut vdev).await {
+        match run_device_session(&conn, &cfg, &mut vdev, window_rx.as_ref()).await {
             Ok(()) => println!("Device disconnected"),
             Err(e) => eprintln!("Session error: {e}"),
         }
@@ -83,6 +97,7 @@ async fn run_device_session(
     conn: &Connection,
     cfg: &Config,
     vdev: &mut VirtualDevice,
+    window_rx: Option<&tokio::sync::watch::Receiver<Option<String>>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Find the device
     let device = match bluetooth::find_device(conn, cfg.device_address.as_deref()).await? {
@@ -154,10 +169,20 @@ async fn run_device_session(
                     }
                 }
 
+                // Resolve active profile based on focused window
+                let active_wm_class = window_rx.map(|rx| rx.borrow().clone()).unwrap_or(None);
+                let profile = cfg.resolve_profile(active_wm_class.as_deref());
+
+                if cfg.debug_mode {
+                    if let Some(ref class) = active_wm_class {
+                        println!("  [window: {class}]");
+                    }
+                }
+
                 match data.len() {
-                    8 => process_hid_report(&data, &mut prev_modifiers, &mut prev_keys, vdev, cfg)?,
-                    6 => process_dial_report(&data, vdev, cfg)?,
-                    2 => process_dial_click(&data, vdev, cfg)?,
+                    8 => process_hid_report(&data, &mut prev_modifiers, &mut prev_keys, vdev, cfg, &profile)?,
+                    6 => process_dial_report(&data, vdev, cfg, &profile)?,
+                    2 => process_dial_click(&data, vdev, cfg, &profile)?,
                     1 => {
                         if cfg.debug_mode { println!("Battery: {}%", data[0]); }
                     }
@@ -178,6 +203,7 @@ fn process_hid_report(
     prev_keys: &mut Vec<u8>,
     vdev: &mut VirtualDevice,
     cfg: &Config,
+    profile: &ResolvedProfile,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let modifiers = data[0];
     let cur_keys: Vec<u8> = data[2..8].iter().copied().filter(|&k| k != 0).collect();
@@ -206,6 +232,10 @@ fn process_hid_report(
     // Released keys
     for &k in prev_keys.iter() {
         if !cur_keys.contains(&k) {
+            // Skip release for remapped buttons (chord was tapped on press)
+            if profile.button_mappings.contains_key(&k.to_string()) {
+                continue;
+            }
             if let Some(key) = hid::hid_to_key(k) {
                 vdev.emit(&[evdev::InputEvent::new(evdev::EventType::KEY, key.code(), 0)])?;
                 if cfg.debug_mode {
@@ -218,6 +248,19 @@ fn process_hid_report(
     // Pressed keys
     for &k in &cur_keys {
         if !prev_keys.contains(&k) {
+            // Check for button remapping
+            if let Some(chord) = profile.button_mappings.get(&k.to_string()) {
+                let keys: Vec<_> = chord.iter().filter_map(|name| hid::key_name_to_evdev(name)).collect();
+                // Tap: press all atomically, then release all atomically
+                let presses: Vec<_> = keys.iter().map(|key| evdev::InputEvent::new(evdev::EventType::KEY, key.code(), 1)).collect();
+                let releases: Vec<_> = keys.iter().rev().map(|key| evdev::InputEvent::new(evdev::EventType::KEY, key.code(), 0)).collect();
+                vdev.emit(&presses)?;
+                vdev.emit(&releases)?;
+                if cfg.debug_mode {
+                    println!("  CHORD: {chord:?}");
+                }
+                continue;
+            }
             if let Some(key) = hid::hid_to_key(k) {
                 vdev.emit(&[evdev::InputEvent::new(evdev::EventType::KEY, key.code(), 1)])?;
                 if cfg.debug_mode {
@@ -236,17 +279,18 @@ fn process_dial_report(
     data: &[u8],
     vdev: &mut VirtualDevice,
     cfg: &Config,
+    profile: &ResolvedProfile,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let dial_val = data[5] as i8;
     if dial_val == 0 { return Ok(()); }
 
     let (key, direction) = if dial_val < 0 {
         // 0xff (-1) = clockwise
-        let key_name = cfg.dial_settings.dial_cw.as_deref().unwrap_or("KEY_VOLUMEUP");
+        let key_name = profile.dial.cw.as_deref().unwrap_or("KEY_VOLUMEUP");
         (hid::key_name_to_evdev(key_name), "CW")
     } else {
         // 0x01 (+1) = counterclockwise
-        let key_name = cfg.dial_settings.dial_ccw.as_deref().unwrap_or("KEY_VOLUMEDOWN");
+        let key_name = profile.dial.ccw.as_deref().unwrap_or("KEY_VOLUMEDOWN");
         (hid::key_name_to_evdev(key_name), "CCW")
     };
 
@@ -266,9 +310,10 @@ fn process_dial_click(
     data: &[u8],
     vdev: &mut VirtualDevice,
     cfg: &Config,
+    profile: &ResolvedProfile,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let pressed = data[0] != 0;
-    let key_name = cfg.dial_settings.dial_click.as_deref().unwrap_or("KEY_MUTE");
+    let key_name = profile.dial.click.as_deref().unwrap_or("KEY_MUTE");
 
     if let Some(key) = hid::key_name_to_evdev(key_name) {
         vdev.emit(&[evdev::InputEvent::new(

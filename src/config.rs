@@ -7,20 +7,37 @@ use std::path::PathBuf;
 pub struct Config {
     pub device_address: Option<String>,
     pub debug_mode: bool,
-    pub key_mappings: HashMap<String, String>,
-    pub dial_settings: DialSettings,
+    pub default: Profile,
+    pub profiles: HashMap<String, AppProfile>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+#[serde(default)]
+pub struct Profile {
+    pub button_mappings: HashMap<String, Vec<String>>,
+    pub dial: DialSettings,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+#[serde(default)]
+pub struct AppProfile {
+    pub wm_class: Vec<String>,
+    pub button_mappings: HashMap<String, Vec<String>>,
+    pub dial: DialSettings,
 }
 
 #[derive(Debug, Deserialize, Clone)]
 #[serde(default)]
 pub struct DialSettings {
-    #[serde(rename = "DIAL_CW")]
-    pub dial_cw: Option<String>,
-    #[serde(rename = "DIAL_CCW")]
-    pub dial_ccw: Option<String>,
-    #[serde(rename = "DIAL_CLICK")]
-    pub dial_click: Option<String>,
-    pub sensitivity: f64,
+    pub cw: Option<String>,
+    pub ccw: Option<String>,
+    pub click: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ResolvedProfile {
+    pub button_mappings: HashMap<String, Vec<String>>,
+    pub dial: DialSettings,
 }
 
 impl Default for Config {
@@ -28,8 +45,41 @@ impl Default for Config {
         Self {
             device_address: None,
             debug_mode: false,
-            key_mappings: HashMap::new(),
-            dial_settings: DialSettings::default(),
+            default: Profile::default(),
+            profiles: HashMap::new(),
+        }
+    }
+}
+
+impl Default for Profile {
+    fn default() -> Self {
+        let mut button_mappings = HashMap::new();
+        // Button 1 (HID 0x0E): Ctrl+Shift+C
+        button_mappings.insert("14".into(), vec!["KEY_LEFTCTRL".into(), "KEY_LEFTSHIFT".into(), "KEY_C".into()]);
+        // Button 2 (HID 0x0A): Ctrl+Shift+V
+        button_mappings.insert("10".into(), vec!["KEY_LEFTCTRL".into(), "KEY_LEFTSHIFT".into(), "KEY_V".into()]);
+        // Button 3 (HID 0x0F): Ctrl+C
+        button_mappings.insert("15".into(), vec!["KEY_LEFTCTRL".into(), "KEY_C".into()]);
+        // Button 4 (HID 0x4C): Ctrl+V
+        button_mappings.insert("76".into(), vec!["KEY_LEFTCTRL".into(), "KEY_V".into()]);
+
+        Self {
+            button_mappings,
+            dial: DialSettings {
+                cw: Some("KEY_VOLUMEUP".into()),
+                ccw: Some("KEY_VOLUMEDOWN".into()),
+                click: Some("KEY_MUTE".into()),
+            },
+        }
+    }
+}
+
+impl Default for AppProfile {
+    fn default() -> Self {
+        Self {
+            wm_class: Vec::new(),
+            button_mappings: HashMap::new(),
+            dial: DialSettings::default(),
         }
     }
 }
@@ -37,10 +87,9 @@ impl Default for Config {
 impl Default for DialSettings {
     fn default() -> Self {
         Self {
-            dial_cw: Some("KEY_VOLUMEUP".into()),
-            dial_ccw: Some("KEY_VOLUMEDOWN".into()),
-            dial_click: Some("KEY_MUTE".into()),
-            sensitivity: 1.0,
+            cw: None,
+            ccw: None,
+            click: None,
         }
     }
 }
@@ -68,6 +117,49 @@ impl Config {
 
         println!("Using default config");
         Self::default()
+    }
+
+    pub fn resolve_profile(&self, wm_class: Option<&str>) -> ResolvedProfile {
+        let wm_class = match wm_class {
+            Some(c) => c,
+            None => return self.default_resolved(),
+        };
+
+        let wm_lower = wm_class.to_lowercase();
+
+        for app_profile in self.profiles.values() {
+            let matched = app_profile.wm_class.iter().any(|c| c.to_lowercase() == wm_lower);
+            if matched {
+                return self.merge_with_app(app_profile);
+            }
+        }
+
+        self.default_resolved()
+    }
+
+    fn default_resolved(&self) -> ResolvedProfile {
+        ResolvedProfile {
+            button_mappings: self.default.button_mappings.clone(),
+            dial: self.default.dial.clone(),
+        }
+    }
+
+    fn merge_with_app(&self, app: &AppProfile) -> ResolvedProfile {
+        let mut button_mappings = self.default.button_mappings.clone();
+        for (k, v) in &app.button_mappings {
+            button_mappings.insert(k.clone(), v.clone());
+        }
+
+        let dial = DialSettings {
+            cw: app.dial.cw.clone().or_else(|| self.default.dial.cw.clone()),
+            ccw: app.dial.ccw.clone().or_else(|| self.default.dial.ccw.clone()),
+            click: app.dial.click.clone().or_else(|| self.default.dial.click.clone()),
+        };
+
+        ResolvedProfile {
+            button_mappings,
+            dial,
+        }
     }
 
     fn default_config_path() -> PathBuf {
