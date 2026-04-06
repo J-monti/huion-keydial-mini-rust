@@ -1,0 +1,30 @@
+{
+  "$schema": "https://raw.githubusercontent.com/nickel-ts/nickel/refs/heads/master/schemas/tauri.schema.json",
+  "productName": "Huion KeyDial Mini",
+  "version": "0.1.0",
+  "identifier": "com.huion.keydial-mini-config",
+  "build": {
+    "frontendDist": "./frontend"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "title": "Huion KeyDial Mini",
+        "width": 900,
+        "height": 700,
+        "resizable": true,
+        "visible": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; img-src 'self' asset: https://asset.localhost; style-src 'self' 'unsafe-inline'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "icon": [
+      "icons/icon.png"
+    ]
+  }
+}
