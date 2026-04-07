@@ -34,39 +34,59 @@ impl WindowReceiver {
     }
 }
 
-/// Start the active-window watcher. Tries KWin Wayland first, falls back to X11 polling.
-pub async fn start_watcher() -> Result<watch::Receiver<Option<String>>, Box<dyn std::error::Error>> {
-    // Try KWin/Wayland first
-    match start_kwin_watcher().await {
-        Ok(rx) => {
-            println!("Using KWin Wayland window detection");
-            return Ok(rx);
-        }
-        Err(e) => {
-            eprintln!("KWin watcher unavailable ({e}), trying X11 fallback");
-        }
-    }
+/// Start the active-window watcher. Returns a channel immediately and retries
+/// KWin/X11 in the background until a backend connects (handles the case where
+/// the driver starts before the desktop session is fully up).
+pub fn start_watcher() -> watch::Receiver<Option<String>> {
+    let (tx, rx) = watch::channel(None);
+    let tx = Arc::new(tx);
 
-    // Fall back to X11 polling via xprop
-    match start_x11_watcher().await {
-        Ok(rx) => {
-            println!("Using X11 window detection (xprop)");
-            Ok(rx)
+    tokio::spawn(async move {
+        const MAX_ATTEMPTS: u32 = 30;
+        const RETRY_INTERVAL: Duration = Duration::from_secs(2);
+
+        for attempt in 1..=MAX_ATTEMPTS {
+            // Try KWin/Wayland first
+            match start_kwin_watcher(tx.clone()).await {
+                Ok(()) => {
+                    println!("Using KWin Wayland window detection");
+                    return;
+                }
+                Err(e) => {
+                    if attempt == 1 {
+                        eprintln!("KWin watcher unavailable ({e}), trying X11 fallback");
+                    }
+                }
+            }
+
+            // Try X11 fallback
+            match start_x11_watcher(tx.clone()).await {
+                Ok(()) => {
+                    println!("Using X11 window detection (xprop)");
+                    return;
+                }
+                Err(e) => {
+                    if attempt == 1 {
+                        eprintln!("X11 watcher unavailable ({e})");
+                        eprintln!("Retrying window detection until desktop session is ready...");
+                    }
+                }
+            }
+
+            tokio::time::sleep(RETRY_INTERVAL).await;
         }
-        Err(e) => {
-            Err(format!("No window detection available (X11: {e})").into())
-        }
-    }
+
+        eprintln!("Window detection unavailable after {MAX_ATTEMPTS} attempts; per-app profiles disabled");
+    });
+
+    rx
 }
 
 // ---------------------------------------------------------------------------
 // KWin / Wayland backend
 // ---------------------------------------------------------------------------
 
-async fn start_kwin_watcher() -> Result<watch::Receiver<Option<String>>, Box<dyn std::error::Error>> {
-    let (tx, rx) = watch::channel(None);
-    let tx = Arc::new(tx);
-
+async fn start_kwin_watcher(tx: Arc<watch::Sender<Option<String>>>) -> Result<(), Box<dyn std::error::Error>> {
     let conn = Connection::session().await?;
     conn.object_server().at("/Window", WindowReceiver { tx }).await?;
     conn.request_name("org.huion.KeyDialMini").await?;
@@ -81,7 +101,7 @@ async fn start_kwin_watcher() -> Result<watch::Receiver<Option<String>>, Box<dyn
         std::future::pending::<()>().await;
     });
 
-    Ok(rx)
+    Ok(())
 }
 
 async fn load_kwin_script(conn: &Connection) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -129,14 +149,12 @@ async fn load_kwin_script(conn: &Connection) -> Result<(), Box<dyn std::error::E
 // X11 backend (xprop polling)
 // ---------------------------------------------------------------------------
 
-async fn start_x11_watcher() -> Result<watch::Receiver<Option<String>>, Box<dyn std::error::Error>> {
+async fn start_x11_watcher(tx: Arc<watch::Sender<Option<String>>>) -> Result<(), Box<dyn std::error::Error>> {
     // Verify xprop is available
     let check = Command::new("xprop").arg("-root").arg("-len").arg("0").output().await?;
     if !check.status.success() {
         return Err("xprop not available or no X display".into());
     }
-
-    let (tx, rx) = watch::channel(None);
 
     tokio::spawn(async move {
         let mut last_class: Option<String> = None;
@@ -152,7 +170,7 @@ async fn start_x11_watcher() -> Result<watch::Receiver<Option<String>>, Box<dyn 
         }
     });
 
-    Ok(rx)
+    Ok(())
 }
 
 /// Get the active window's WM_CLASS via xprop.

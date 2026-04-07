@@ -71,22 +71,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let conn = Connection::system().await?;
     println!("Connected to system DBus");
 
-    // Start active window watcher (KWin script via session DBus)
-    let window_rx = match window::start_watcher().await {
-        Ok(rx) => {
-            println!("Started active window watcher");
-            Some(rx)
-        }
-        Err(e) => {
-            eprintln!("Warning: window watcher unavailable: {e}");
-            eprintln!("Per-app profiles will not auto-switch; using default profile");
-            None
-        }
-    };
+    // Start active window watcher (retries KWin/X11 in background until desktop is ready)
+    let window_rx = window::start_watcher();
 
     // Main loop: find device, attach, process events, reconnect on disconnect
     loop {
-        match run_device_session(&conn, &cfg_rx, &mut vdev, window_rx.as_ref()).await {
+        match run_device_session(&conn, &cfg_rx, &mut vdev, &window_rx).await {
             Ok(()) => println!("Device disconnected"),
             Err(e) => eprintln!("Session error: {e}"),
         }
@@ -210,7 +200,7 @@ async fn run_device_session(
     conn: &Connection,
     cfg_rx: &watch::Receiver<Config>,
     vdev: &mut VirtualDevice,
-    window_rx: Option<&tokio::sync::watch::Receiver<Option<String>>>,
+    window_rx: &watch::Receiver<Option<String>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Find the device
     let device_address = cfg_rx.borrow().device_address.clone();
@@ -288,7 +278,7 @@ async fn run_device_session(
                 let cfg = cfg_rx.borrow().clone();
 
                 // Resolve active profile based on focused window
-                let active_wm_class = window_rx.map(|rx| rx.borrow().clone()).unwrap_or(None);
+                let active_wm_class = window_rx.borrow().clone();
                 let profile = cfg.resolve_profile(active_wm_class.as_deref());
 
                 if profile.name != active_profile_name {
