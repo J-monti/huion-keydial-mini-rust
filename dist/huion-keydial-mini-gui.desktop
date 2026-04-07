@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=Huion KeyDial Mini
+Comment=Configuration tool for Huion KeyDial Mini
+Exec=env WEBKIT_DISABLE_DMABUF_RENDERER=1 huion-keydial-mini-gui
+Icon=huion-keydial-mini
+Type=Application
+Categories=Settings;HardwareSettings;
+Keywords=huion;keydial;tablet;
+StartupWMClass=huion-keydial-mini-gui
+Terminal=false

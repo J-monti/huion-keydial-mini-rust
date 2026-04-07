@@ -1,12 +1,74 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
+
+/// Deserialize a dial value that can be either a single string or array of strings.
+/// Accepts: `"KEY_X"` -> `Some(vec!["KEY_X"])`, `["KEY_X", "KEY_Y"]` -> `Some(vec![...])`, `null` -> `None`
+fn deserialize_dial_keys<'de, D>(deserializer: D) -> Result<Option<Vec<String>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    use serde::de;
+
+    struct DialKeysVisitor;
+
+    impl<'de> de::Visitor<'de> for DialKeysVisitor {
+        type Value = Option<Vec<String>>;
+
+        fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            f.write_str("null, a key name string, or an array of key name strings")
+        }
+
+        fn visit_none<E: de::Error>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+
+        fn visit_unit<E: de::Error>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+
+        fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
+            Ok(Some(vec![v.to_string()]))
+        }
+
+        fn visit_string<E: de::Error>(self, v: String) -> Result<Self::Value, E> {
+            Ok(Some(vec![v]))
+        }
+
+        fn visit_seq<A: de::SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+            let mut keys = Vec::new();
+            while let Some(key) = seq.next_element::<String>()? {
+                keys.push(key);
+            }
+            if keys.is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some(keys))
+            }
+        }
+    }
+
+    deserializer.deserialize_any(DialKeysVisitor)
+}
+
+/// Serialize dial keys: single-element vecs as a plain string, multi-element as array.
+fn serialize_dial_keys<S>(value: &Option<Vec<String>>, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    match value {
+        None => serializer.serialize_none(),
+        Some(keys) if keys.len() == 1 => serializer.serialize_str(&keys[0]),
+        Some(keys) => keys.serialize(serializer),
+    }
+}
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(default)]
 pub struct Config {
     pub device_address: Option<String>,
     pub debug_mode: bool,
+    pub show_profile_notifications: bool,
     pub default: Profile,
     pub profiles: HashMap<String, AppProfile>,
 }
@@ -26,16 +88,20 @@ pub struct AppProfile {
     pub dial: DialSettings,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(default)]
 pub struct DialSettings {
-    pub cw: Option<String>,
-    pub ccw: Option<String>,
-    pub click: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_dial_keys", serialize_with = "serialize_dial_keys")]
+    pub cw: Option<Vec<String>>,
+    #[serde(default, deserialize_with = "deserialize_dial_keys", serialize_with = "serialize_dial_keys")]
+    pub ccw: Option<Vec<String>>,
+    #[serde(default, deserialize_with = "deserialize_dial_keys", serialize_with = "serialize_dial_keys")]
+    pub click: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ResolvedProfile {
+    pub name: String,
     pub button_mappings: HashMap<String, Vec<String>>,
     pub dial: DialSettings,
 }
@@ -79,6 +145,7 @@ impl Default for Config {
         Self {
             device_address: None,
             debug_mode: false,
+            show_profile_notifications: true,
             default: Profile::default(),
             profiles: HashMap::new(),
         }
@@ -96,13 +163,17 @@ impl Default for Profile {
         button_mappings.insert("15".into(), vec!["KEY_LEFTCTRL".into(), "KEY_C".into()]);
         // Button 4 (HID 0x4C): Ctrl+V
         button_mappings.insert("76".into(), vec!["KEY_LEFTCTRL".into(), "KEY_V".into()]);
+        // Button 5 (HID 0x0C): Ctrl+Z (Undo)
+        button_mappings.insert("12".into(), vec!["KEY_LEFTCTRL".into(), "KEY_Z".into()]);
+        // Button 10 (HID 0x1D): Ctrl+Y (Redo)
+        button_mappings.insert("29".into(), vec!["KEY_LEFTCTRL".into(), "KEY_Y".into()]);
 
         Self {
             button_mappings,
             dial: DialSettings {
-                cw: Some("KEY_VOLUMEUP".into()),
-                ccw: Some("KEY_VOLUMEDOWN".into()),
-                click: Some("KEY_MUTE".into()),
+                cw: Some(vec!["KEY_VOLUMEUP".into()]),
+                ccw: Some(vec!["KEY_VOLUMEDOWN".into()]),
+                click: Some(vec!["KEY_MUTE".into()]),
             },
         }
     }
@@ -179,10 +250,10 @@ impl Config {
 
         let wm_lower = wm_class.to_lowercase();
 
-        for app_profile in self.profiles.values() {
+        for (name, app_profile) in &self.profiles {
             let matched = app_profile.wm_class.iter().any(|c| c.to_lowercase() == wm_lower);
             if matched {
-                return self.merge_with_app(app_profile);
+                return self.merge_with_app(name, app_profile);
             }
         }
 
@@ -191,12 +262,13 @@ impl Config {
 
     fn default_resolved(&self) -> ResolvedProfile {
         ResolvedProfile {
+            name: "default".into(),
             button_mappings: self.default.button_mappings.clone(),
             dial: self.default.dial.clone(),
         }
     }
 
-    fn merge_with_app(&self, app: &AppProfile) -> ResolvedProfile {
+    fn merge_with_app(&self, name: &str, app: &AppProfile) -> ResolvedProfile {
         let mut button_mappings = self.default.button_mappings.clone();
         for (k, v) in &app.button_mappings {
             button_mappings.insert(k.clone(), v.clone());
@@ -209,6 +281,7 @@ impl Config {
         };
 
         ResolvedProfile {
+            name: name.into(),
             button_mappings,
             dial,
         }
