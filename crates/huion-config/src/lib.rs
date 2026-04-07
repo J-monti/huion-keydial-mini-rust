@@ -68,6 +68,7 @@ where
 pub struct Config {
     pub device_address: Option<String>,
     pub debug_mode: bool,
+    pub show_profile_notifications: bool,
     pub default: Profile,
     pub profiles: HashMap<String, AppProfile>,
 }
@@ -144,6 +145,7 @@ impl Default for Config {
         Self {
             device_address: None,
             debug_mode: false,
+            show_profile_notifications: true,
             default: Profile::default(),
             profiles: HashMap::new(),
         }

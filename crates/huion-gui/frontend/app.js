@@ -34,6 +34,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         renderDeviceOverlays();
         renderButtonList();
         renderDialSettings();
+        renderGlobalSettings();
         renderWmClassSection();
         updateDirtyState();
         bindGlobalEvents();
@@ -839,6 +840,16 @@ function commitDialEdit() {
     renderDialSettings();
 }
 
+// ── Global Settings ─────────────────────────────────
+function renderGlobalSettings() {
+    const toggle = document.getElementById('toggle-notifications');
+    toggle.checked = config.show_profile_notifications !== false;
+    toggle.onchange = () => {
+        config.show_profile_notifications = toggle.checked;
+        markDirty();
+    };
+}
+
 // ── WM Class Editor ──────────────────────────────────
 function renderWmClassSection() {
     const section = document.getElementById('wm-class-section');
@@ -915,6 +926,7 @@ function discardChanges() {
     renderProfileSelector();
     renderButtonList();
     renderDialSettings();
+    renderGlobalSettings();
     renderWmClassSection();
     updateDirtyState();
     updateOverlayHighlights();
