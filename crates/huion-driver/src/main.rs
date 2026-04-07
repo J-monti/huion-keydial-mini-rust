@@ -283,11 +283,14 @@ async fn run_device_session(
 
                 if profile.name != active_profile_name {
                     println!("Profile switched: {} -> {}", active_profile_name, profile.name);
-                    let _ = Notification::new()
-                        .summary("Huion KeyDial Mini")
-                        .body(&format!("Profile: {}", profile.name))
-                        .timeout(2000)
-                        .show();
+                    let notify_name = profile.name.clone();
+                    tokio::task::spawn_blocking(move || {
+                        let _ = Notification::new()
+                            .summary("Huion KeyDial Mini")
+                            .body(&format!("Profile: {notify_name}"))
+                            .timeout(2000)
+                            .show();
+                    });
                     active_profile_name = profile.name.clone();
                 }
 
