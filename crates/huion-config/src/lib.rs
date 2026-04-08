@@ -68,7 +68,6 @@ where
 pub struct Config {
     pub device_address: Option<String>,
     pub debug_mode: bool,
-    pub show_profile_notifications: bool,
     pub default: Profile,
     pub profiles: HashMap<String, AppProfile>,
 }
@@ -145,7 +144,6 @@ impl Default for Config {
         Self {
             device_address: None,
             debug_mode: false,
-            show_profile_notifications: true,
             default: Profile::default(),
             profiles: HashMap::new(),
         }
@@ -293,6 +291,13 @@ impl Config {
             .join("huion-keydial-mini")
             .join("config.yaml")
     }
+}
+
+pub fn active_profile_path() -> PathBuf {
+    std::env::var("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| std::env::temp_dir())
+        .join("huion-keydial-active-profile")
 }
 
 pub fn all_key_names() -> Vec<&'static str> {

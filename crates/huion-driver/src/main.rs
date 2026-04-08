@@ -17,7 +17,11 @@ use zbus::Connection;
 use zbus::zvariant::OwnedValue;
 
 use huion_config::{Config, ResolvedProfile};
-use notify_rust::Notification;
+
+fn write_active_profile(name: &str) {
+    let path = huion_config::active_profile_path();
+    let _ = std::fs::write(&path, name);
+}
 
 #[derive(Parser)]
 #[command(name = "huion-keydial-mini", about = "Huion KeyDial Mini driver")]
@@ -283,16 +287,7 @@ async fn run_device_session(
 
                 if profile.name != active_profile_name {
                     println!("Profile switched: {} -> {}", active_profile_name, profile.name);
-                    if cfg.show_profile_notifications {
-                        let notify_name = profile.name.clone();
-                        tokio::task::spawn_blocking(move || {
-                            let _ = Notification::new()
-                                .summary("Huion KeyDial Mini")
-                                .body(&format!("Profile: {notify_name}"))
-                                .timeout(2000)
-                                .show();
-                        });
-                    }
+                    write_active_profile(&profile.name);
                     active_profile_name = profile.name.clone();
                 }
 

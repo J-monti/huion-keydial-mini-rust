@@ -1,6 +1,7 @@
 use huion_config::{all_key_names, ButtonInfo, Config, BUTTONS};
 use serde::Serialize;
 use std::path::PathBuf;
+use std::sync::Arc;
 use tauri::Manager;
 
 #[derive(Serialize)]
@@ -105,17 +106,35 @@ fn parse_desktop_file(path: &std::path::Path) -> Option<AppInfo> {
     })
 }
 
+fn read_active_profile() -> String {
+    std::fs::read_to_string(huion_config::active_profile_path())
+        .unwrap_or_else(|_| "default".into())
+        .trim()
+        .to_string()
+}
+
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
             use tauri::menu::{MenuBuilder, MenuItemBuilder};
             use tauri::tray::TrayIconBuilder;
 
+            let profile_item = MenuItemBuilder::with_id("profile", "Profile: default")
+                .enabled(false)
+                .build(app)?;
+            let profile_item = Arc::new(profile_item);
+
             let show = MenuItemBuilder::with_id("show", "Open Settings").build(app)?;
             let quit = MenuItemBuilder::with_id("quit", "Quit").build(app)?;
-            let menu = MenuBuilder::new(app).item(&show).separator().item(&quit).build()?;
+            let menu = MenuBuilder::new(app)
+                .item(profile_item.as_ref())
+                .separator()
+                .item(&show)
+                .separator()
+                .item(&quit)
+                .build()?;
 
-            TrayIconBuilder::new()
+            let tray = TrayIconBuilder::new()
                 .icon(app.default_window_icon().cloned().unwrap())
                 .tooltip("Huion KeyDial Mini")
                 .menu(&menu)
@@ -146,6 +165,22 @@ pub fn run() {
                     }
                 })
                 .build(app)?;
+
+            // Poll active profile state file and update tray
+            let profile_item_poll = Arc::clone(&profile_item);
+            std::thread::spawn(move || {
+                let mut last_profile = String::new();
+                loop {
+                    let profile = read_active_profile();
+                    if profile != last_profile {
+                        let label = format!("Profile: {profile}");
+                        let _ = profile_item_poll.set_text(&label);
+                        let _ = tray.set_tooltip(Some(&format!("Huion KeyDial Mini — {profile}")));
+                        last_profile = profile;
+                    }
+                    std::thread::sleep(std::time::Duration::from_secs(1));
+                }
+            });
 
             // Hide window on close instead of quitting
             if let Some(window) = app.get_webview_window("main") {

@@ -10,19 +10,19 @@ AUTOSTART_DIR="${HOME}/.config/autostart"
 ICON_DIR="${HOME}/.local/share/icons/hicolor/128x128/apps"
 BIN_DIR="${HOME}/.local/bin"
 
-BINARY="${REPO_ROOT}/target/release/huion-keydial-mini-gui"
+BINARY="${REPO_ROOT}/target/release/huion-gui"
 ICON_SRC="${REPO_ROOT}/crates/huion-gui/icons/icon.png"
 
 if [ ! -f "$BINARY" ]; then
     echo "Error: Binary not found at $BINARY"
-    echo "Run 'cargo build --release -p huion-keydial-mini-gui' first."
+    echo "Run 'cargo build --release -p huion-gui' first."
     exit 1
 fi
 
 # Install binary
 mkdir -p "$BIN_DIR"
-cp "$BINARY" "$BIN_DIR/huion-keydial-mini-gui"
-echo "Installed binary to $BIN_DIR/huion-keydial-mini-gui"
+cp "$BINARY" "$BIN_DIR/huion-gui"
+echo "Installed binary to $BIN_DIR/huion-gui"
 
 # Install icon
 mkdir -p "$ICON_DIR"
@@ -31,7 +31,7 @@ echo "Installed icon"
 
 # Install .desktop file
 mkdir -p "$APP_DIR"
-cp "$SCRIPT_DIR/huion-keydial-mini-gui.desktop" "$APP_DIR/"
+cp "$SCRIPT_DIR/huion-gui.desktop" "$APP_DIR/"
 echo "Installed .desktop file to $APP_DIR"
 
 # Install autostart entry
@@ -39,7 +39,7 @@ if [ "${1:-}" = "--no-autostart" ]; then
     echo "Skipping autostart (--no-autostart)"
 else
     mkdir -p "$AUTOSTART_DIR"
-    cp "$SCRIPT_DIR/huion-keydial-mini-gui-autostart.desktop" "$AUTOSTART_DIR/huion-keydial-mini-gui.desktop"
+    cp "$SCRIPT_DIR/huion-gui-autostart.desktop" "$AUTOSTART_DIR/huion-gui.desktop"
     echo "Installed autostart entry to $AUTOSTART_DIR"
 fi
 
