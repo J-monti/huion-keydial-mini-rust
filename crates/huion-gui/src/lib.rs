@@ -1,6 +1,7 @@
 use huion_config::{all_key_names, ButtonInfo, Config, BUTTONS};
 use serde::Serialize;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tauri::Manager;
 
@@ -114,8 +115,11 @@ fn read_active_profile() -> String {
 }
 
 pub fn run() {
+    let running = Arc::new(AtomicBool::new(true));
+    let running_for_exit = Arc::clone(&running);
+
     tauri::Builder::default()
-        .setup(|app| {
+        .setup(move |app| {
             use tauri::menu::{MenuBuilder, MenuItemBuilder};
             use tauri::tray::TrayIconBuilder;
 
@@ -168,9 +172,10 @@ pub fn run() {
 
             // Poll active profile state file and update tray
             let profile_item_poll = Arc::clone(&profile_item);
+            let running_thread = Arc::clone(&running);
             std::thread::spawn(move || {
                 let mut last_profile = String::new();
-                loop {
+                while running_thread.load(Ordering::Relaxed) {
                     let profile = read_active_profile();
                     if profile != last_profile {
                         let label = format!("Profile: {profile}");
@@ -178,7 +183,13 @@ pub fn run() {
                         let _ = tray.set_tooltip(Some(&format!("Huion KeyDial Mini — {profile}")));
                         last_profile = profile;
                     }
-                    std::thread::sleep(std::time::Duration::from_secs(1));
+                    // Sleep in short intervals to respond to shutdown quickly
+                    for _ in 0..10 {
+                        if !running_thread.load(Ordering::Relaxed) {
+                            return;
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(100));
+                    }
                 }
             });
 
@@ -202,6 +213,11 @@ pub fn run() {
             list_installed_apps,
             get_button_layout,
         ])
-        .run(tauri::generate_context!())
-        .expect("error running tauri app");
+        .build(tauri::generate_context!())
+        .expect("error building tauri app")
+        .run(move |_app, event| {
+            if let tauri::RunEvent::Exit = event {
+                running_for_exit.store(false, Ordering::Relaxed);
+            }
+        });
 }
