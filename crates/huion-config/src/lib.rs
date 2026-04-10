@@ -131,7 +131,7 @@ pub const BUTTONS: &[ButtonInfo] = &[
     ButtonInfo { hid_code: "25", label: "12", row: 2, col: 3, row_span: 1, col_span: 1, remappable: true },
     // Row 4: native modifier buttons (not remappable)
     ButtonInfo { hid_code: "m1", label: "Ctrl",  row: 3, col: 0, row_span: 1, col_span: 1, remappable: false },
-    ButtonInfo { hid_code: "m4", label: "Alt",   row: 3, col: 1, row_span: 1, col_span: 1, remappable: false },
+    ButtonInfo { hid_code: "m4", label: "Alt",   row: 3, col: 1, row_span: 1, col_span: 1, remappable: true },
     ButtonInfo { hid_code: "m2", label: "Shift", row: 3, col: 2, row_span: 1, col_span: 1, remappable: false },
     // Spanning buttons
     ButtonInfo { hid_code: "40", label: "13", row: 3, col: 3, row_span: 2, col_span: 1, remappable: true },
@@ -165,6 +165,8 @@ impl Default for Profile {
         button_mappings.insert("12".into(), vec!["KEY_LEFTCTRL".into(), "KEY_Z".into()]);
         // Button 10 (HID 0x1D): Ctrl+Y (Redo)
         button_mappings.insert("29".into(), vec!["KEY_LEFTCTRL".into(), "KEY_Y".into()]);
+        // Alt button (modifier 0x04): Down arrow
+        button_mappings.insert("m4".into(), vec!["KEY_DOWN".into()]);
 
         Self {
             button_mappings,

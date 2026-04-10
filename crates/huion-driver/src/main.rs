@@ -334,9 +334,24 @@ fn process_hid_report(
     let mod_changed = modifiers ^ *prev_modifiers;
     for bit in 0..8u8 {
         let mask = 1 << bit;
-        if mod_changed & mask != 0 {
+        if mod_changed & mask == 0 { continue; }
+        let pressed = modifiers & mask != 0;
+
+        // Check for modifier remapping (e.g. "m4" for Alt)
+        let mod_key = format!("m{mask}");
+        if let Some(chord) = profile.button_mappings.get(&mod_key) {
+            let keys: Vec<_> = chord.iter().filter_map(|n| hid::key_name_to_evdev(n)).collect();
+            if pressed {
+                let presses: Vec<_> = keys.iter().map(|k| evdev::InputEvent::new(evdev::EventType::KEY, k.code(), 1)).collect();
+                let releases: Vec<_> = keys.iter().rev().map(|k| evdev::InputEvent::new(evdev::EventType::KEY, k.code(), 0)).collect();
+                vdev.emit(&presses)?;
+                vdev.emit(&releases)?;
+            }
+            if cfg.debug_mode {
+                println!("  {} modifier remap: {chord:?}", if pressed { "PRESS" } else { "RELEASE" });
+            }
+        } else {
             for key in hid::modifier_keys(mask) {
-                let pressed = modifiers & mask != 0;
                 vdev.emit(&[evdev::InputEvent::new(
                     evdev::EventType::KEY, key.code(), i32::from(pressed),
                 )])?;
