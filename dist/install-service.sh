@@ -8,18 +8,15 @@ REPO_ROOT="$(dirname "$SCRIPT_DIR")"
 SERVICE_DIR="${HOME}/.config/systemd/user"
 BIN_DIR="${HOME}/.local/bin"
 
-BINARY="${REPO_ROOT}/target/release/huion-keydial-mini"
+# Build release binaries
+echo "Building release binaries..."
+cargo build --release --manifest-path "$REPO_ROOT/Cargo.toml" -p huion-keydial-mini -p huion-gui
 
-if [ ! -f "$BINARY" ]; then
-    echo "Error: Binary not found at $BINARY"
-    echo "Run 'cargo build --release -p huion-keydial-mini' first."
-    exit 1
-fi
-
-# Install binary
+# Install binaries
 mkdir -p "$BIN_DIR"
-cp "$BINARY" "$BIN_DIR/huion-keydial-mini"
-echo "Installed binary to $BIN_DIR/huion-keydial-mini"
+cp "$REPO_ROOT/target/release/huion-keydial-mini" "$BIN_DIR/huion-keydial-mini"
+cp "$REPO_ROOT/target/release/huion-gui" "$BIN_DIR/huion-gui"
+echo "Installed binaries to $BIN_DIR/"
 
 # Install systemd service
 mkdir -p "$SERVICE_DIR"
