@@ -238,12 +238,19 @@ async fn run_device_session(
     let mut prev_keys: Vec<u8> = Vec::new();
     let mut active_profile_name = String::from("default");
     let mut stream = zbus::MessageStream::from(conn);
+    let idle_timeout = std::time::Duration::from_secs(300);
+    let idle_sleep = tokio::time::sleep(idle_timeout);
+    tokio::pin!(idle_sleep);
 
     loop {
         tokio::select! {
             _ = signal::ctrl_c() => {
                 println!("\nShutting down");
                 std::process::exit(0);
+            }
+            _ = &mut idle_sleep => {
+                eprintln!("No BLE notifications for {}s, reconnecting...", idle_timeout.as_secs());
+                return Ok(());
             }
             msg_result = stream.next() => {
                 let Some(msg_result) = msg_result else { break };
@@ -264,11 +271,7 @@ async fn run_device_session(
                 let Ok((iface, changed, _inv)): Result<(String, HashMap<String, OwnedValue>, Vec<String>), _> =
                     body.deserialize() else { continue };
 
-                if iface != "org.bluez.GattCharacteristic1" { continue; }
-                let Some(value) = changed.get("Value") else { continue };
-                let Ok(data) = <Vec<u8>>::try_from(value.clone()) else { continue };
-
-                // Check for disconnect (device property change)
+                // Check for disconnect before filtering by interface
                 if iface == "org.bluez.Device1" {
                     if let Some(conn_val) = changed.get("Connected") {
                         if let Ok(false) = bool::try_from(conn_val.clone()) {
@@ -276,7 +279,15 @@ async fn run_device_session(
                             return Ok(());
                         }
                     }
+                    continue;
                 }
+
+                if iface != "org.bluez.GattCharacteristic1" { continue; }
+                let Some(value) = changed.get("Value") else { continue };
+                let Ok(data) = <Vec<u8>>::try_from(value.clone()) else { continue };
+
+                // Reset idle timer on every GATT notification
+                idle_sleep.as_mut().reset(tokio::time::Instant::now() + idle_timeout);
 
                 // Get current config snapshot
                 let cfg = cfg_rx.borrow().clone();

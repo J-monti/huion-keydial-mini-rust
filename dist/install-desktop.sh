@@ -19,9 +19,10 @@ if [ ! -f "$BINARY" ]; then
     exit 1
 fi
 
-# Install binary
+# Install binary (install(1) unlinks the target first, sidestepping ETXTBSY
+# if huion-gui is currently running)
 mkdir -p "$BIN_DIR"
-cp "$BINARY" "$BIN_DIR/huion-gui"
+install -m 755 "$BINARY" "$BIN_DIR/huion-gui"
 echo "Installed binary to $BIN_DIR/huion-gui"
 
 # Install icon
