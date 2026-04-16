@@ -10,11 +10,6 @@ pub struct DeviceInfo {
     pub dbus_path: String,
 }
 
-/// Convert MAC address to BlueZ DBus path
-pub fn mac_to_dbus_path(mac: &str) -> String {
-    format!("/org/bluez/hci0/dev_{}", mac.replace(':', "_"))
-}
-
 /// Find a connected Huion device, optionally filtered by MAC address
 pub async fn find_device(conn: &Connection, target_mac: Option<&str>) -> Result<Option<DeviceInfo>, Box<dyn std::error::Error>> {
     let root_path = ObjectPath::try_from("/")?;
